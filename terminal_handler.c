@@ -20,6 +20,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "bsp/board.h"
 #include "pico/stdlib.h"
@@ -54,36 +55,58 @@ struct read_status
 
 static uint32_t decode_event(struct read_status *read_status, struct vt102_event *vt102_event);
 
-void terminal_handler(vt102_event_handler event_handler, void *context)
+struct terminal_context
 {
-    bool connected = true;
-
-    // Set up buffer etc...
-    // This uses the call stack for as long as we are looping in this method.
-
+    bool connected;
     unsigned char write_buffer[WRITE_BUFFER_LENGTH];
-
-    tb_init(&write_buffer, WRITE_BUFFER_LENGTH);
-
-    uint32_t largest_send = 0;
-    uint32_t largest_available = 0;
-
-    struct vt102_event event = {connect, 0x00};
-    event_handler(&event, context);
-
+    uint32_t largest_send;
+    uint32_t largest_available;
     char read_buffer[READ_SIZE];
-    struct read_status read_status = {0, read_buffer};
+    struct read_status read_status;
+    vt102_event_handler event_handler;
+    void *hand_back;
+};
 
-    while (connected)
+void *terminal_handler_init()
+{
+    struct terminal_context *context = malloc(sizeof(struct terminal_context));
+    context->connected = false;
+    context->largest_send = 0;
+    context->largest_available = 0;
+    context->read_status.current_read_pos = 0;
+    context->read_status.current_read = context->read_buffer;
+
+    return context;
+}
+
+bool terminal_handler_begin(void *context, vt102_event_handler event_handler, void *hand_back)
+{
+    struct terminal_context *term_context = (struct terminal_context *)context;
+    term_context->event_handler = event_handler;
+    term_context->hand_back = hand_back;
+}
+
+void terminal_handler_run(void *context)
+{
+    struct terminal_context *term_context = (struct terminal_context *)context;
+    tud_task();
+
+    bool connected = tud_cdc_n_connected(CDC_INTF);
+    if (connected)
     {
-        tud_task();
-        connected = tud_cdc_n_connected(CDC_INTF);
-        if (connected)
+        if (!term_context->connected)
         {
-            if (_tb_write_size() > largest_send)
+            // We have connected.
+            term_context->connected = true;
+            struct vt102_event event = {connect, 0x00};
+            tb_init(term_context->write_buffer, WRITE_BUFFER_LENGTH);
+            term_context->event_handler(&event, term_context->hand_back);
+        }
+
+        if (_tb_write_size() > term_context->largest_send)
             {
-                largest_send = _tb_write_size();
-                printf("Largest send so far %d\n", largest_send);
+                term_context->largest_send = _tb_write_size();
+                printf("Largest send so far %d\n", term_context->largest_send);
             }
 
             // If we have data to write we will write is all before handle() is called.
@@ -99,39 +122,40 @@ void terminal_handler(vt102_event_handler event_handler, void *context)
                 }
             }
 
-            // Reset the event.
-            event.event_type = none;
-            event.character = 0x00;
+            struct vt102_event event = {none, 0x00};
             if (!_tb_write_size())
             {
                 // Stage 1 - Reading data into current_read
-                if (read_status.current_read_pos < READ_SIZE)
+                if (term_context->read_status.current_read_pos < READ_SIZE)
                 {
                     uint32_t bytes_available = tud_cdc_n_available(CDC_INTF);
 
-                    uint32_t bytes_read = tud_cdc_n_read(CDC_INTF, read_status.current_read + read_status.current_read_pos,
-                        READ_SIZE - read_status.current_read_pos);
-                    read_status.current_read_pos += bytes_read;
+                    uint32_t bytes_read = tud_cdc_n_read(CDC_INTF,
+                        term_context->read_status.current_read +
+                        term_context->read_status.current_read_pos,
+                        READ_SIZE - term_context->read_status.current_read_pos);
+                    term_context->read_status.current_read_pos += bytes_read;
                 }
 
-                if (!decode_event(&read_status, &event))
+                if (decode_event(&term_context->read_status, &event))
                 {
-                    // We need to read more data to determine the event.
-                    continue;
+                    // We have a complete event to handle.
+                    term_context->event_handler(&event, context);
                 }
             }
-
-            // We have a complete event to handle.
-
-            event_handler(&event, context);
-
+    }
+    else
+    {
+        if (term_context->connected)
+        {
+            // We have disconnected.
+            term_context->connected = false;
+            struct vt102_event event = {disconnect, 0x00};
+            term_context->event_handler(&event, term_context->hand_back);
+            tb_destroy();  // handle_disconnected may have wanted to drain the remaining input data.
         }
     }
 
-    event.event_type = disconnect;
-    event.character = 0x00;
-    event_handler(&event, context);
-    tb_destroy();  // handle_disconnected may have wanted to drain the remaining input data.s
 }
 
 static uint32_t decode_event(struct read_status *read_status, struct vt102_event *event)

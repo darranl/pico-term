@@ -24,9 +24,8 @@
 
 typedef void (*vt102_event_handler)(vt102_event *event, void *context);
 
-/*
- * Main handler loop for terminal interaction.
- */
-void terminal_handler(vt102_event_handler event_handler, void *context);
+void *terminal_handler_init();
+bool terminal_handler_begin(void *context, vt102_event_handler event_handler, void *hand_back);
+void terminal_handler_run(void *context);
 
 #endif // TERMINAL_HANDLER_H
