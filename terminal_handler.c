@@ -96,6 +96,8 @@ bool terminal_handler_begin(void *context, vt102_event_handler event_handler, vo
     term_context->hand_back = hand_back;
 }
 
+
+
 void terminal_handler_run(void *context)
 {
     struct terminal_context *term_context = (struct terminal_context *)context;
@@ -124,6 +126,7 @@ void terminal_handler_run(void *context)
             term_context->largest_send = _tb_write_size();
             printf("Largest send so far %d\n", term_context->largest_send);
         }
+
 
         // If we have data to write we will write is all before handle() is called.
         if (_tb_write_size() && tud_cdc_n_write_available(CDC_INTF))
@@ -156,7 +159,7 @@ void terminal_handler_run(void *context)
             if (decode_event(&term_context->read_status, &event))
             {
                 // We have a complete event to handle.
-                term_context->event_handler(&event, context);
+                term_context->event_handler(&event, term_context->hand_back);
             }
         }
     }
