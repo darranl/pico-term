@@ -55,8 +55,10 @@ struct read_status
 
 static uint32_t decode_event(struct read_status *read_status, struct vt102_event *vt102_event);
 
+#define TERMINAL_CONTEXT_ID 0xAA
 struct terminal_context
 {
+    char id;
     bool connected;
     unsigned char write_buffer[WRITE_BUFFER_LENGTH];
     uint32_t largest_send;
@@ -70,6 +72,8 @@ struct terminal_context
 void *terminal_handler_init()
 {
     struct terminal_context *context = malloc(sizeof(struct terminal_context));
+    context->id = TERMINAL_CONTEXT_ID;
+
     context->connected = false;
     context->largest_send = 0;
     context->largest_available = 0;
@@ -82,6 +86,12 @@ void *terminal_handler_init()
 bool terminal_handler_begin(void *context, vt102_event_handler event_handler, void *hand_back)
 {
     struct terminal_context *term_context = (struct terminal_context *)context;
+    if (term_context->id != TERMINAL_CONTEXT_ID)
+    {
+        printf("Invalid context passed to terminal_handler_begin 0x%02x\n", term_context->id);
+        return false;
+    }
+
     term_context->event_handler = event_handler;
     term_context->hand_back = hand_back;
 }
@@ -89,6 +99,12 @@ bool terminal_handler_begin(void *context, vt102_event_handler event_handler, vo
 void terminal_handler_run(void *context)
 {
     struct terminal_context *term_context = (struct terminal_context *)context;
+    if (term_context->id != TERMINAL_CONTEXT_ID)
+    {
+        printf("Invalid context passed to terminal_handler_run 0x%02x\n", term_context->id);
+        return;
+    }
+
     tud_task();
 
     bool connected = tud_cdc_n_connected(CDC_INTF);
@@ -104,45 +120,45 @@ void terminal_handler_run(void *context)
         }
 
         if (_tb_write_size() > term_context->largest_send)
-            {
-                term_context->largest_send = _tb_write_size();
-                printf("Largest send so far %d\n", term_context->largest_send);
-            }
+        {
+            term_context->largest_send = _tb_write_size();
+            printf("Largest send so far %d\n", term_context->largest_send);
+        }
 
-            // If we have data to write we will write is all before handle() is called.
-            if (_tb_write_size() && tud_cdc_n_write_available(CDC_INTF))
-            {
-                // We have data to send AND there is room on the buffer.
-                _tb_send(write_cb, tud_cdc_n_write_available(CDC_INTF));
+        // If we have data to write we will write is all before handle() is called.
+        if (_tb_write_size() && tud_cdc_n_write_available(CDC_INTF))
+        {
+            // We have data to send AND there is room on the buffer.
+            _tb_send(write_cb, tud_cdc_n_write_available(CDC_INTF));
 
-                if (!_tb_write_size())
-                {
-                    // Add data written, check if it needs a flush.
-                    _tb_flush(flush_cb);
-                }
-            }
-
-            struct vt102_event event = {none, 0x00};
             if (!_tb_write_size())
             {
-                // Stage 1 - Reading data into current_read
-                if (term_context->read_status.current_read_pos < READ_SIZE)
-                {
-                    uint32_t bytes_available = tud_cdc_n_available(CDC_INTF);
-
-                    uint32_t bytes_read = tud_cdc_n_read(CDC_INTF,
-                        term_context->read_status.current_read +
-                        term_context->read_status.current_read_pos,
-                        READ_SIZE - term_context->read_status.current_read_pos);
-                    term_context->read_status.current_read_pos += bytes_read;
-                }
-
-                if (decode_event(&term_context->read_status, &event))
-                {
-                    // We have a complete event to handle.
-                    term_context->event_handler(&event, context);
-                }
+                // Add data written, check if it needs a flush.
+                _tb_flush(flush_cb);
             }
+        }
+
+        struct vt102_event event = {none, 0x00};
+        if (!_tb_write_size())
+        {
+            // Stage 1 - Reading data into current_read
+            if (term_context->read_status.current_read_pos < READ_SIZE)
+            {
+                uint32_t bytes_available = tud_cdc_n_available(CDC_INTF);
+
+                uint32_t bytes_read = tud_cdc_n_read(CDC_INTF,
+                                                     term_context->read_status.current_read +
+                                                         term_context->read_status.current_read_pos,
+                                                     READ_SIZE - term_context->read_status.current_read_pos);
+                term_context->read_status.current_read_pos += bytes_read;
+            }
+
+            if (decode_event(&term_context->read_status, &event))
+            {
+                // We have a complete event to handle.
+                term_context->event_handler(&event, context);
+            }
+        }
     }
     else
     {
@@ -152,10 +168,9 @@ void terminal_handler_run(void *context)
             term_context->connected = false;
             struct vt102_event event = {disconnect, 0x00};
             term_context->event_handler(&event, term_context->hand_back);
-            tb_destroy();  // handle_disconnected may have wanted to drain the remaining input data.
+            tb_destroy(); // handle_disconnected may have wanted to drain the remaining input data.
         }
     }
-
 }
 
 static uint32_t decode_event(struct read_status *read_status, struct vt102_event *event)
